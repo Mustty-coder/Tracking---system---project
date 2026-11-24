@@ -1,0 +1,476 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SDR Web Receiver</title>
+    <style>
+        body { font-family: sans-serif; background-color: #0f111a; color: #f0f3f6; padding: 30px; }
+        .card { background-color: #1a1c28; border: 1px solid #2d3142; border-radius: 12px; padding: 25px; margin-bottom: 20px; }
+        h1 { margin: 0; color: #00e676; }
+        .badge { background-color: #24293e; color: #00b0ff; padding: 5px 12px; border-radius: 6px; font-family: monospace; font-weight: bold; }
+        button { background-color: #00e676; color: #0f111a; border: none; padding: 12px 24px; font-size: 15px; font-weight: bold; border-radius: 6px; cursor: pointer; margin-top: 15px; }
+        .tuner-group { margin-top: 15px; display: flex; gap: 10px; align-items: center; }
+        input[type="number"] { background-color: #24293e; border: 1px solid #2d3142; color: #fff; padding: 10px; border-radius: 6px; font-size: 16px; width: 150px; font-family: monospace; }
+        .tune-btn { background-color: #00b0ff; color: #fff; padding: 10px 20px; margin-top: 0; }
+        canvas { width: 100%; max-width: 1100px; height: 280px; display: block; margin: 0 auto; }
+        .header-bar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; padding: 15px; background-color: #1a1c28; border: 1px solid #2d3142; border-radius: 12px; }
+        .system-clock { font-size: 18px; color: #ffd700; font-family: monospace; font-weight: bold; }
+        .notification { position: fixed; top: 20px; right: 20px; padding: 15px 20px; background-color: #00e676; color: #0f111a; border-radius: 6px; font-weight: bold; display: none; z-index: 1000; animation: slideIn 0.3s ease; }
+        @keyframes slideIn { from { transform: translateX(400px); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+        .notification.show { display: block; }
+        .button-group { display: flex; gap: 10px; }
+        button.secondary { background-color: #666; margin-top: 0; }
+        button.secondary:hover { background-color: #777; }
+        .activity-log { margin-top: 15px; max-height: 200px; overflow-y: auto; background-color: #0f111a; border: 1px solid #2d3142; border-radius: 6px; padding: 10px; }
+        .log-entry { font-size: 12px; color: #8f9bb3; padding: 5px 0; border-bottom: 1px solid #2d3142; font-family: monospace; }
+        .log-entry:last-child { border-bottom: none; }
+        table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 12px; }
+        th { background-color: #24293e; padding: 8px; text-align: left; border: 1px solid #2d3142; color: #00b0ff; }
+        td { padding: 8px; border: 1px solid #2d3142; }
+        tr:nth-child(even) { background-color: #0f111a; }
+        .modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.8); z-index: 2000; }
+        .modal.show { display: flex; justify-content: center; align-items: center; }
+        .modal-content { background-color: #1a1c28; padding: 30px; border-radius: 12px; border: 1px solid #2d3142; max-width: 600px; width: 90%; }
+        .modal-close { float: right; font-size: 28px; font-weight: bold; color: #ff5252; cursor: pointer; }
+        .modal-close:hover { color: #ff7777; }
+    </style>
+</head>
+<body>
+
+    <!-- System Notification -->
+    <div id="notification" class="notification"></div>
+
+    <!-- Settings Modal -->
+    <div id="settingsModal" class="modal">
+        <div class="modal-content">
+            <span class="modal-close">&times;</span>
+            <h2>Settings</h2>
+            <p>
+                <label style="color: #8f9bb3;">
+                    <input type="checkbox" id="notificationsEnabled" checked> Enable Signal Detection Notifications
+                </label>
+            </p>
+            <p>
+                <label style="color: #8f9bb3;">
+                    <input type="checkbox" id="loggingEnabled" checked> Enable Activity Logging
+                </label>
+            </p>
+            <button class="secondary" onclick="document.getElementById('settingsModal').classList.remove('show')">Close</button>
+            <button class="secondary" style="background-color: #ff5252; margin-left: 10px;" onclick="if(confirm('Clear all activity history?')){localStorage.removeItem('activityLog'); location.reload();}">Clear History</button>
+        </div>
+    </div>
+
+    <!-- Header with System Clock -->
+    <div class="header-bar">
+        <div>
+            <h2 style="margin: 0; color: #00e676;">RF Signal Monitoring System</h2>
+        </div>
+        <div class="button-group">
+            <span class="system-clock" id="systemClock">00:00:00</span>
+            <button class="secondary" onclick="document.getElementById('settingsModal').classList.add('show')">⚙ Settings</button>
+        </div>
+    </div>
+
+    <div class="card">
+        <h1>Custom SDR Web Receiver</h1>
+        <p>Active Frequency: <span id="current-freq-badge" class="badge">462.125 MHz</span></p>
+        <p>Displayed Span: <span id="span-badge" class="badge">1.152 MHz</span></p>
+        <div class="tuner-group">
+            <label for="freq-input">Tune Target (MHz): </label>
+            <input type="number" id="freq-input" value="462.125" step="0.025" min="400.000" max="470.000">
+            <button id="tune-btn" class="tune-btn">Apply Tune</button>
+        </div>
+
+        <p>Status: <span id="status" style="color: orange;">Awaiting Activation...</span></p>
+        <button id="start-btn">Activate Audio Engine</button>
+        <button id="mute-btn" style="background-color: #ffb300; color: #0f111a; display: none;">Mute Audio</button>
+        <div class="tuner-group" style="margin-top: 20px; flex-wrap: wrap;">
+            <button id="record-start-btn" style="background-color: #00e676; margin-top: 0;">Start Recording</button>
+            <button id="record-pause-btn" style="background-color: #ffb300; color: #0f111a; margin-top: 0;">Pause Recording</button>
+            <button id="record-stop-btn" style="background-color: #ff5252; color: #fff; margin-top: 0;">Stop Recording</button>
+        </div>
+        <p id="recording-status" style="margin-top: 10px; color: #8f9bb3;">Recording: idle</p>
+    </div>
+
+    <div class="card">
+        <h3>Live RF Spectrum Scope</h3>
+        <canvas id="visualScope" width="800" height="250"></canvas>
+    </div>
+
+    <div class="card">
+        <h3>Activity Log</h3>
+        <div class="activity-log" id="activityLog">
+            <div class="log-entry">System initialized</div>
+        </div>
+    </div>
+
+    <div class="card">
+        <h3>Event History</h3>
+        <table>
+            <thead>
+                <tr>
+                    <th>Timestamp</th>
+                    <th>Event Type</th>
+                    <th>Details</th>
+                    <th>Frequency (MHz)</th>
+                </tr>
+            </thead>
+            <tbody id="eventHistory">
+                <tr>
+                    <td>00:00:00</td>
+                    <td>System</td>
+                    <td>Initialized</td>
+                    <td>-</td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+
+    <script>
+        // ========== NEW FEATURE 1: System Clock ==========
+        function updateSystemClock() {
+            const now = new Date();
+            const hours = String(now.getHours()).padStart(2, '0');
+            const minutes = String(now.getMinutes()).padStart(2, '0');
+            const seconds = String(now.getSeconds()).padStart(2, '0');
+            document.getElementById('systemClock').innerText = `${hours}:${minutes}:${seconds}`;
+        }
+        setInterval(updateSystemClock, 1000);
+        updateSystemClock();
+
+        // ========== NEW FEATURE 2-4: Activity Log & Event History ==========
+        let activityLog = [];
+        const MAX_LOG_ENTRIES = 30;
+        
+        // Load activity log from localStorage
+        function loadActivityLog() {
+            const saved = localStorage.getItem('activityLog');
+            if (saved) {
+                activityLog = JSON.parse(saved);
+                renderActivityLog();
+            }
+        }
+        
+        // Save activity log to localStorage
+        function saveActivityLog() {
+            localStorage.setItem('activityLog', JSON.stringify(activityLog));
+        }
+        
+        // Render activity log from current data
+        function renderActivityLog() {
+            const logDiv = document.getElementById('activityLog');
+            logDiv.innerHTML = activityLog.length === 0 
+                ? '<div class="log-entry">No activity recorded</div>'
+                : activityLog.map(e => 
+                    `<div class="log-entry">[${e.time}] ${e.eventType}: ${e.details}</div>`
+                ).join('');
+            
+            // Also render event history table
+            const tbody = document.getElementById('eventHistory');
+            tbody.innerHTML = activityLog.map(e => 
+                `<tr><td>${e.time}</td><td>${e.eventType}</td><td>${e.details}</td><td>${e.frequency || '-'}</td></tr>`
+            ).join('');
+        }
+        
+        function addLogEntry(eventType, details, frequency = null) {
+            if (!document.getElementById('loggingEnabled').checked) return;
+            const now = new Date();
+            const time = String(now.getHours()).padStart(2, '0') + ':' + 
+                        String(now.getMinutes()).padStart(2, '0') + ':' + 
+                        String(now.getSeconds()).padStart(2, '0');
+            const entry = { time, eventType, details, frequency };
+            activityLog.unshift(entry);
+            if (activityLog.length > MAX_LOG_ENTRIES) activityLog.pop();
+            saveActivityLog();
+            renderActivityLog();
+        }
+
+        // ========== NEW FEATURE 3: Signal Detection Notification ==========
+        function showNotification(message) {
+            if (!document.getElementById('notificationsEnabled').checked) return;
+            const notif = document.getElementById('notification');
+            notif.innerText = message;
+            notif.classList.add('show');
+            setTimeout(() => notif.classList.remove('show'), 4000);
+        }
+
+        // ========== NEW FEATURE 6: Settings Modal ==========
+        document.querySelector('.modal-close').addEventListener('click', function() {
+            document.getElementById('settingsModal').classList.remove('show');
+        });
+        window.addEventListener('click', function(e) {
+            const modal = document.getElementById('settingsModal');
+            if (e.target === modal) modal.classList.remove('show');
+        });
+
+        // ========== EXISTING FUNCTIONALITY (ENHANCED WITH LOGGING) ==========
+        const startBtn = document.getElementById('start-btn');
+        const muteBtn = document.getElementById('mute-btn');
+        const tuneBtn = document.getElementById('tune-btn');
+        const recordStartBtn = document.getElementById('record-start-btn');
+        const recordPauseBtn = document.getElementById('record-pause-btn');
+        const recordStopBtn = document.getElementById('record-stop-btn');
+        const recordingStatusText = document.getElementById('recording-status');
+        const freqInput = document.getElementById('freq-input');
+        const freqBadge = document.getElementById('current-freq-badge');
+        const spanBadge = document.getElementById('span-badge');
+        const statusText = document.getElementById('status');
+
+        const canvas = document.getElementById('visualScope');
+        const ctx = canvas.getContext('2d');
+        const historyLength = 40;
+        const scopeData = Array(historyLength).fill(-60);
+        const spectrumData = Array(256).fill(-120);
+        const signalReceived = { value: false };
+        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const hostUrl = window.location.host || 'localhost:8000';
+        let audioCtx = null;
+        let audioSocket = null;
+        let signalSocket = null;
+        let nextScheduleTime = 0;
+        let audioStarted = false;
+        let muted = false;
+        let lastSignalDetected = false;
+
+        function drawScope() {
+            const width = canvas.width;
+            const height = canvas.height;
+            ctx.clearRect(0, 0, width, height);
+            ctx.fillStyle = '#0f111a';
+            ctx.fillRect(0, 0, width, height);
+
+            const gradient = ctx.createLinearGradient(0, 0, 0, height);
+            gradient.addColorStop(0, 'rgba(0, 230, 118, 0.3)');
+            gradient.addColorStop(1, 'rgba(0, 230, 118, 0.05)');
+
+            // Draw wideband spectrum
+            ctx.fillStyle = '#14202b';
+            ctx.fillRect(0, 0, width, height);
+            ctx.strokeStyle = '#00e676';
+            ctx.lineWidth = 1.5;
+            ctx.beginPath();
+
+            spectrumData.forEach((value, index) => {
+                const x = (index / (spectrumData.length - 1)) * width;
+                const y = height - ((value + 120) / 130) * height;
+                if (index === 0) ctx.moveTo(x, y);
+                else ctx.lineTo(x, y);
+            });
+
+            ctx.stroke();
+            ctx.lineTo(width, height);
+            ctx.lineTo(0, height);
+            ctx.closePath();
+            ctx.fillStyle = signalReceived.value ? gradient : 'rgba(0, 0, 0, 0)';
+            ctx.fill();
+
+            // Draw center line and axis labels
+            ctx.strokeStyle = '#ffffff22';
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.moveTo(0, height * 0.25);
+            ctx.lineTo(width, height * 0.25);
+            ctx.moveTo(0, height * 0.5);
+            ctx.lineTo(width, height * 0.5);
+            ctx.moveTo(0, height * 0.75);
+            ctx.lineTo(width, height * 0.75);
+            ctx.stroke();
+
+            if (!signalReceived.value) {
+                ctx.strokeStyle = '#00e676';
+                ctx.lineWidth = 2;
+                ctx.beginPath();
+                ctx.moveTo(0, height * 0.5);
+                ctx.lineTo(width, height * 0.5);
+                ctx.stroke();
+                ctx.fillStyle = '#8f9bb3';
+                ctx.font = '16px sans-serif';
+                ctx.fillText('No signal yet', width / 2 - 60, height / 2 - 10);
+            }
+
+            ctx.fillStyle = '#8f9bb3';
+            ctx.font = '13px sans-serif';
+            ctx.fillText('Wideband Spectrum (live)', 12, 20);
+            ctx.fillText('-120 dB', 10, height - 8);
+            ctx.fillText('10 dB', 10, 18);
+        }
+
+        drawScope();
+
+        function setStatus(message, color = 'orange') {
+            statusText.textContent = message;
+            statusText.style.color = color;
+        }
+
+        function updateRecordingUi(state) {
+            const normalized = (state || 'idle').toLowerCase();
+            recordingStatusText.textContent = `Recording: ${normalized}`;
+            recordingStatusText.style.color = normalized === 'recording' ? '#00e676' : normalized === 'paused' ? '#ffb300' : '#8f9bb3';
+            recordStartBtn.disabled = normalized === 'recording';
+            recordPauseBtn.disabled = normalized !== 'recording';
+            recordStopBtn.disabled = normalized === 'idle' || normalized === 'stopped';
+        }
+
+        function sendRecordingCommand(command) {
+            if (signalSocket && signalSocket.readyState === WebSocket.OPEN) {
+                signalSocket.send(JSON.stringify({ action: 'recording', command }));
+            } else {
+                updateRecordingUi(command === 'start' ? 'recording' : command === 'pause' ? 'paused' : 'stopped');
+            }
+        }
+
+        function connectSignalStream() {
+            signalSocket = new WebSocket(`${protocol}//${hostUrl}/ws/signal`);
+
+            signalSocket.onopen = () => {
+                setStatus('Connecting to SDR stream...', '#00b0ff');
+                addLogEntry('Connection', 'Connected to signal stream');
+            };
+
+            signalSocket.onmessage = (event) => {
+                const parsed = JSON.parse(event.data);
+                        if (parsed.spectrum !== undefined) {
+                    signalReceived.value = true;
+                    spectrumData.splice(0, spectrumData.length, ...parsed.spectrum);
+                    drawScope();
+                }
+                if (parsed.frequency !== undefined) {
+                    freqBadge.textContent = `${Number(parsed.frequency).toFixed(3)} MHz`;
+                }
+                if (parsed.span_mhz !== undefined) {
+                    spanBadge.textContent = `${Number(parsed.span_mhz).toFixed(3)} MHz`;
+                }
+                if (parsed.recording_state !== undefined) {
+                    updateRecordingUi(parsed.recording_state);
+                }
+                // NEW: Signal detection notification
+                const currentDetected = parsed.detected || false;
+                if (currentDetected && !lastSignalDetected) {
+                    showNotification(`🎯 Signal Detected! ${parsed.frequency.toFixed(3)} MHz (RSSI: ${parsed.rssi})`);
+                    addLogEntry('Detection', `Signal detected at ${parsed.frequency.toFixed(3)} MHz (RSSI: ${parsed.rssi})`, parsed.frequency.toFixed(3));
+                }
+                lastSignalDetected = currentDetected;
+                if (parsed.hardware_ready) {
+                    if (parsed.detected) {
+                        setStatus('Signal detected', '#00e676');
+                    } else {
+                        setStatus('Listening for signal', 'orange');
+                    }
+                } else {
+                    setStatus('Hardware unavailable - demo stream active', 'orange');
+                }
+            };
+
+            signalSocket.onerror = () => {
+                setStatus('Connection issue - retrying...', '#ff6b6b');
+                addLogEntry('Error', 'Signal stream connection error');
+            };
+
+            signalSocket.onclose = () => {
+                setStatus('Connection lost - reconnecting...', '#ff6b6b');
+                addLogEntry('Disconnection', 'Signal stream disconnected');
+                setTimeout(connectSignalStream, 1000);
+            };
+        }
+
+        async function startAudioStream() {
+            if (audioStarted) return;
+            audioStarted = true;
+
+            startBtn.disabled = true;
+            startBtn.textContent = 'Starting...';
+            setStatus('Connecting to audio stream...', 'orange');
+            addLogEntry('Audio', 'Audio stream initialization starting');
+
+            audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 48000 });
+            await audioCtx.resume();
+            nextScheduleTime = audioCtx.currentTime;
+
+            audioSocket = new WebSocket(`${protocol}//${hostUrl}/ws/audio`);
+            audioSocket.binaryType = 'arraybuffer';
+
+            audioSocket.onopen = () => {
+                startBtn.style.display = 'none';
+                muteBtn.style.display = 'inline-block';
+                setStatus('Streaming live audio...', '#00e676');
+                addLogEntry('Audio', 'Audio stream connected and playing');
+            };
+
+            audioSocket.onerror = () => {
+                setStatus('Audio stream error. Check the backend server.', '#ff6b6b');
+                addLogEntry('Error', 'Audio stream connection error');
+            };
+
+            audioSocket.onmessage = (event) => {
+                const rawPcmData = new Int16Array(event.data);
+                if (rawPcmData.length === 0) return;
+
+                const audioBuffer = audioCtx.createBuffer(1, rawPcmData.length, 48000);
+                const channelData = audioBuffer.getChannelData(0);
+
+                for (let i = 0; i < rawPcmData.length; i++) {
+                    channelData[i] = rawPcmData[i] / 32768.0;
+                }
+
+                const bufferSource = audioCtx.createBufferSource();
+                bufferSource.buffer = audioBuffer;
+                bufferSource.connect(audioCtx.destination);
+
+                if (nextScheduleTime < audioCtx.currentTime) {
+                    nextScheduleTime = audioCtx.currentTime + 0.02;
+                }
+                if (!muted) {
+                    bufferSource.start(nextScheduleTime);
+                    nextScheduleTime += audioBuffer.duration;
+                }
+            };
+        }
+
+        muteBtn.onclick = () => {
+            if (!audioCtx) return;
+            muted = !muted;
+            audioCtx.suspend().catch(() => {});
+            if (!muted) {
+                audioCtx.resume().catch(() => {});
+            }
+            muteBtn.textContent = muted ? 'Unmute Audio' : 'Mute Audio';
+            addLogEntry('Control', muted ? 'Audio muted' : 'Audio unmuted');
+        };
+
+        tuneBtn.onclick = () => {
+            const targetMhz = parseFloat(freqInput.value);
+            if (signalSocket && signalSocket.readyState === WebSocket.OPEN) {
+                signalSocket.send(JSON.stringify({ action: 'tune', frequency: targetMhz }));
+                freqBadge.textContent = `${targetMhz.toFixed(3)} MHz`;
+                addLogEntry('Tuning', `Tuned to ${targetMhz.toFixed(3)} MHz`, targetMhz.toFixed(3));
+            }
+        };
+
+        startBtn.onclick = () => {
+            startAudioStream().catch(() => {
+                setStatus('Enable audio playback to start streaming.', '#ffb300');
+                addLogEntry('Error', 'Audio stream failed to start');
+            });
+        };
+
+        recordStartBtn.onclick = () => {
+            sendRecordingCommand('start');
+            addLogEntry('Recording', 'Recording started');
+        };
+        recordPauseBtn.onclick = () => {
+            sendRecordingCommand('pause');
+            addLogEntry('Recording', 'Recording paused');
+        };
+        recordStopBtn.onclick = () => {
+            sendRecordingCommand('stop');
+            addLogEntry('Recording', 'Recording stopped');
+        };
+
+        updateRecordingUi('idle');
+        loadActivityLog();
+        connectSignalStream();
+        addLogEntry('System', 'System initialized - ready for use');
+    </script>
+</body>
+</html>
